@@ -3,29 +3,42 @@ use std::{convert::TryFrom, fmt, num::ParseIntError};
 #[derive(Debug)]
 struct Base64(Vec<u8>);
 
-const BASE64_ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+#[derive(Debug)]
+struct InvalidU8ForBase64(u8);
+
+fn u8_to_base64(it: u8) -> Result<char, InvalidU8ForBase64> {
+    Ok(match it {
+        0..=25 => (b'A' + it).into(),
+        26..=51 => (b'a' + (it - 26)).into(),
+        52..=61 => (b'0' + (it - 52)).into(),
+        62 => '+',
+        63 => '/',
+        _ => return Err(InvalidU8ForBase64(it)),
+    })
+}
 
 impl fmt::Display for Base64 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for chunk in self.0.chunks_exact(3) {
-            let first = (usize::from(chunk[0]) & 0b1111_1100) >> 2;
-            write!(f, "{}", &BASE64_ALPHABET[first..=first])?;
+            let (a, b, c) = match chunk {
+                [a, b, c] => (*a, *b, *c),
+                [a, b] => (*a, *b, 0),
+                [a] => (*a, 0, 0),
+                _ => continue,
+            };
 
-            // 6    f    6    f    6    d
-            // 0110 1111 0110 1111 0110 1101
-            // 01101111 01101111 01101101
-            // 011011 110110  111101 101101
-
-            let second = ((usize::from(chunk[0]) & 0b0000_0011) << 4)
-                + ((usize::from(chunk[1]) & 0b1111_0000) >> 4);
-            write!(f, "{}", &BASE64_ALPHABET[second..=second])?;
-
-            let third = ((usize::from(chunk[1]) & 0b0000_1111) << 2)
-                + ((usize::from(chunk[2]) & 0b1100_0000) >> 6);
-            write!(f, "{}", &BASE64_ALPHABET[third..=third])?;
-
-            let fourth = usize::from(chunk[2]) & 0b0011_1111;
-            write!(f, "{}", &BASE64_ALPHABET[fourth..=fourth])?;
+            write!(f, "{}", u8_to_base64(a >> 2).unwrap())?;
+            write!(
+                f,
+                "{}",
+                u8_to_base64(((a & 0b0000_0011) << 4) + (b >> 4)).unwrap()
+            )?;
+            write!(
+                f,
+                "{}",
+                u8_to_base64(((b & 0b0000_1111) << 2) + (c >> 6)).unwrap()
+            )?;
+            write!(f, "{}", u8_to_base64(c & 0b0011_1111).unwrap())?;
         }
         Ok(())
     }
@@ -84,18 +97,6 @@ impl TryFrom<&[u8]> for Base64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn print_base64_alphabet() {
-        let mut expected = String::new();
-        for range in ['A'..='Z', 'a'..='z', '0'..='9'].iter_mut() {
-            for c in range {
-                expected.push(c);
-            }
-        }
-        expected.push_str("+/");
-        assert_eq!(BASE64_ALPHABET, expected);
-    }
 
     #[test]
     fn hex_to_base64_test() {
