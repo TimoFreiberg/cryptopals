@@ -54,21 +54,9 @@ impl From<Hex> for Base64 {
 struct Hex(Vec<u8>);
 
 impl Hex {
-    /// If `self` and `other` have the same length, xors every byte against each other.
-    /// Returns `Err(self)`, otherwise.
-    pub fn xor_fixed_len(mut self, other: &Self) -> Result<Self, Self> {
-        if self.0.len() != other.0.len() {
-            return Err(self);
-        }
-        for (b, other) in self.0.iter_mut().zip(&other.0) {
-            *b ^= other;
-        }
-        Ok(self)
-    }
-
-    pub fn xor_single(&mut self, b: u8) {
-        for u in &mut self.0 {
-            *u ^= b;
+    pub fn xor(&mut self, key: &[u8]) {
+        for (u, k) in self.0.iter_mut().zip(key.iter().cycle()) {
+            *u ^= *k;
         }
     }
 
@@ -169,7 +157,7 @@ fn find_cypher(hex: &Hex) -> Option<(u8, u32, Hex)> {
     (0u8..=255)
         .filter_map(|cypher| {
             let mut hex = hex.clone();
-            hex.xor_single(cypher);
+            hex.xor(&[cypher]);
             let score = char_score(hex.to_ascii().ok()?)?;
             Some((cypher, score, hex))
         })
@@ -194,8 +182,10 @@ mod tests {
     #[test]
     fn challenge_2_xor() {
         let mut hex = Hex::try_from("1c0111001f010100061a024b53535009181c").unwrap();
-        let xor = Hex::try_from("686974207468652062756c6c277320657965").unwrap();
-        hex = hex.xor_fixed_len(&xor).unwrap();
+        let xor = Hex::try_from("686974207468652062756c6c277320657965")
+            .unwrap()
+            .0;
+        hex.xor(&xor);
         assert_eq!(
             hex,
             Hex::try_from("746865206b696420646f6e277420706c6179").unwrap()
@@ -212,7 +202,7 @@ mod tests {
             .iter()
             .map(|b| {
                 let mut h = hex.clone();
-                h.xor_single(*b);
+                h.xor(&[*b]);
                 (h, *b)
             })
             .collect();
