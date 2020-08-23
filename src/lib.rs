@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, fmt, num::ParseIntError};
+use std::{convert::TryFrom, fmt, num::ParseIntError, str::Utf8Error};
 
 #[derive(Debug)]
 struct Base64(Vec<u8>);
@@ -19,12 +19,12 @@ fn u8_to_base64(it: u8) -> Result<char, InvalidU8ForBase64> {
 
 impl fmt::Display for Base64 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for chunk in self.0.chunks_exact(3) {
+        for chunk in self.0.chunks(3) {
             let (a, b, c) = match chunk {
                 [a, b, c] => (*a, *b, *c),
                 [a, b] => (*a, *b, 0),
                 [a] => (*a, 0, 0),
-                _ => continue,
+                _ => unreachable!(),
             };
 
             write!(f, "{}", u8_to_base64(a >> 2).unwrap())?;
@@ -50,11 +50,52 @@ impl From<Hex> for Base64 {
     }
 }
 
+#[derive(Eq, PartialEq, Debug, Clone)]
 struct Hex(Vec<u8>);
+
+impl Hex {
+    /// If `self` and `other` have the same length, xors every byte against each other.
+    /// Returns `Err(self)`, otherwise.
+    pub fn xor_fixed_len(mut self, other: &Self) -> Result<Self, Self> {
+        if self.0.len() != other.0.len() {
+            return Err(self);
+        }
+        for (b, other) in self.0.iter_mut().zip(&other.0) {
+            *b ^= other;
+        }
+        Ok(self)
+    }
+
+    pub fn xor_single(&mut self, b: u8) {
+        for u in &mut self.0 {
+            *u ^= b;
+        }
+    }
+
+    pub fn to_ascii(&self) -> Result<&str, Utf8Error> {
+        std::str::from_utf8(&self.0)
+    }
+}
+
+impl fmt::Display for Hex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn hex_char(u: u8) -> char {
+            match u {
+                0..=9 => (b'0' + u).into(),
+                10..=16 => (b'A' + (u - 10)).into(),
+                _ => unreachable!(),
+            }
+        }
+        for u in &self.0 {
+            write!(f, "{}", hex_char(u >> 4))?;
+            write!(f, "{}", hex_char(u & 0b0000_1111))?
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 enum InvalidHex {
-    InvalidLength,
     ParseError(ParseIntError),
 }
 
@@ -67,14 +108,13 @@ impl From<ParseIntError> for InvalidHex {
 impl TryFrom<&str> for Hex {
     type Error = InvalidHex;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if value.len() % 2 != 0 {
-            return Err(InvalidHex::InvalidLength);
-        }
         let mut result = Vec::with_capacity(value.len() / 2);
         let mut chars = value.chars();
         while let Some(one) = chars.next() {
-            let two = chars.next().unwrap();
-            result.push(u8::from_str_radix(&format!("{}{}", one, two), 16)?);
+            result.push(match chars.next() {
+                Some(two) => u8::from_str_radix(&format!("{}{}", one, two), 16)?,
+                None => u8::from_str_radix(&format!("0{}", one), 16)?,
+            });
         }
         Ok(Hex(result))
     }
@@ -94,17 +134,125 @@ impl TryFrom<&[u8]> for Base64 {
     }
 }
 
+fn char_score(s: &str) -> Option<u32> {
+    let len = s.len() as f64;
+    let count_diff = |c, expected_freq: f64| {
+        let expected = expected_freq / 100f64 * len;
+        let actual = s.chars().filter(|it| *it == c).count() as f64;
+        (expected - actual).abs()
+    };
+    if !s.is_ascii() {
+        return None;
+    }
+    if s.chars().any(|it| it.is_control() && it != '\n') {
+        return None;
+    }
+    Some(
+        ([
+            (' ', 12.17),
+            ('.', 6.57),
+            ('a', 6.09),
+            ('e', 11.36),
+            ('i', 7.546),
+            ('o', 7.507),
+            ('r', 4.95),
+            ('t', 8.03),
+        ]
+        .iter()
+        .map(|(c, freq)| count_diff(*c, *freq))
+        .sum::<f64>()
+            * 100f64) as u32,
+    )
+}
+
+fn find_cypher(hex: &Hex) -> Option<(u8, u32, Hex)> {
+    (0u8..=255)
+        .filter_map(|cypher| {
+            let mut hex = hex.clone();
+            hex.xor_single(cypher);
+            let score = char_score(hex.to_ascii().ok()?)?;
+            Some((cypher, score, hex))
+        })
+        .min_by_key(|(_, score, _)| *score)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
-    fn hex_to_base64_test() {
+    fn challenge_1_hex_to_base64() {
         let hex_str = Hex::try_from("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d").unwrap();
 
         assert_eq!(
             Base64::from(hex_str).to_string(),
             "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t"
         );
+    }
+
+    #[test]
+    fn challenge_2_xor() {
+        let mut hex = Hex::try_from("1c0111001f010100061a024b53535009181c").unwrap();
+        let xor = Hex::try_from("686974207468652062756c6c277320657965").unwrap();
+        hex = hex.xor_fixed_len(&xor).unwrap();
+        assert_eq!(
+            hex,
+            Hex::try_from("746865206b696420646f6e277420706c6179").unwrap()
+        )
+    }
+
+    #[test]
+    fn challenge_3_single_byte_xor_cipher() {
+        let hex =
+            Hex::try_from("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736")
+                .unwrap();
+        let bytes: Vec<_> = (0u8..=255).collect();
+        let hexes: Vec<_> = bytes
+            .iter()
+            .map(|b| {
+                let mut h = hex.clone();
+                h.xor_single(*b);
+                (h, *b)
+            })
+            .collect();
+        let base64s: Vec<_> = hexes
+            .into_iter()
+            .filter_map(|(hex, b)| {
+                let string = hex.to_ascii().ok()?.to_string();
+                let score = char_score(&string)?;
+                Some((string, b, score))
+            })
+            .collect();
+
+        let (result, _b, _score) = base64s.iter().min_by_key(|(_, _, score)| score).unwrap();
+
+        assert_eq!(result, "Cooking MC's like a pound of bacon");
+    }
+
+    #[test]
+    fn challenge_4_find_single_xor() {
+        let input = fs::read_to_string("4.txt").unwrap();
+        let input = input.lines();
+
+        let (_, _, decrypted_message) = input
+            .filter_map(|s| {
+                let hex = Hex::try_from(s).ok()?;
+                find_cypher(&hex)
+            })
+            .min_by_key(|(score, _, _)| *score)
+            .unwrap();
+
+        assert_eq!(
+            decrypted_message.to_ascii().unwrap(),
+            "Now that the party is jumping\n"
+        )
+    }
+
+    #[test]
+    fn ord_option() {
+        let mut v = vec![Some(2), Some(1), None];
+        v.sort();
+        dbg!(&v);
     }
 }
