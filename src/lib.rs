@@ -240,9 +240,15 @@ mod tests {
     }
 
     #[test]
-    fn ord_option() {
-        let mut v = vec![Some(2), Some(1), None];
-        v.sort();
-        dbg!(&v);
+    fn challenge_5_repeating_key_xor() {
+        let msg = b"Burning 'em, if you ain't quick and nimble\nI go crazy when I hear a cymbal";
+        let mut hex = Hex(msg.iter().copied().collect());
+        hex.xor(b"ICE");
+        assert_eq!(
+            hex,
+            Hex::try_from(
+                "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
+            ).unwrap()
+        );
     }
 }
